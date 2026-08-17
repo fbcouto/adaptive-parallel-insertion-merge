@@ -1,0 +1,15 @@
+/target
+Cargo.lock
+
+/crosscheck/
+*.bin
+
+*.odt
+*.docx
+*.xlsx
+
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db

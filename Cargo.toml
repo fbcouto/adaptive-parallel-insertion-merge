@@ -1,0 +1,29 @@
+[package]
+name = "adaptive-parallel-insertion-merge"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rayon = "=1.10.0"
+rayon-core = "=1.12.1"
+
+[dev-dependencies]
+rand = "0.8"
+criterion = "0.4"
+
+[[bench]]
+name = "pim_benchmark"
+harness = false
+
+[[bench]]
+name = "pim_benchmark_str"
+harness = false
+
+[[bin]]
+name = "crosscheck"
+path = "src/bin/crosscheck.rs"
+
+[profile.release]
+opt-level = 3
+codegen-units = 1
+lto = true
