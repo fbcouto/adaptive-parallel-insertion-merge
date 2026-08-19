@@ -1,6 +1,5 @@
 pub mod multimerge;
 pub mod pim_kernel;
-pub mod random_path;
 pub mod cut;
 pub mod despacho;
 
