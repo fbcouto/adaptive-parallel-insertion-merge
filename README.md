@@ -86,12 +86,15 @@ rate separates them (0% vs 100%).
 Measured cost of the full sample: **0.5 µs for `u64`, 4.2 µs for `&str`** — under
 0.3% of even the fastest scenario. Sampling is not a budget constraint.
 
-**The sample is a guess, and it is checked.** Eight windows of 96 comparisons see
-0.0004% of a 100M-element array. Once `detect_global_trend` has run, the exact
-run count is available for free, and a mean run length far below what the sample
-predicted overrides the guess. This matters: a reversed array containing repeated
-keys looks monotone to the sampler — equal pairs count as ascending — but the
-metadata reveals runs averaging under ten elements.
+**The sample is a guess, and it is checked against the metadata.** The mean run
+length the sampler reports is computed *inside a 96-comparison window*, so it can
+never exceed 96 — comparing it against a larger threshold would send every
+structured input down the chaotic path, discarding the very runs the engine
+exists to exploit. Once `detect_global_trend` has run, `metadata.len()` gives the
+exact run count over the whole array at no additional cost, and an input whose
+real mean run length clears the threshold is re-routed to the run path. Measured
+on almost-sorted integers, this correction alone accounts for a 20 to 25 point
+swing.
 
 ### 2. Run detection and the metadata monoid
 
@@ -178,7 +181,17 @@ comparisons against a million elements moved, and the cuts run in parallel.
 around four tasks per thread — with a floor on segment size so that each task
 carries enough work to dilute its scheduling cost.
 
+**Where this applies matters.** The P-way partition wins when the merge is the
+top-level operation with only a handful of tasks. Inside the full merge tree,
+where the recursion already supplies thousands of tasks, the rank cuts buy
+nothing and still cost: measured on almost-sorted integers, routing the run path
+through the k-way tree instead was worth 34 to 46 points. The engine therefore
+uses the k-way tree for inputs with natural runs and the P-way tree for the
+block path, where runs are synthesised and the tree is shallow.
+
 ### 5. Cache-blocked k-way merge
+
+This is the tree used whenever the input has natural runs to merge.
 
 A binary merge tree over `k` runs costs `log₂(k)` full passes over memory. On a
 bandwidth-saturated machine the pass count, not the comparison count, sets the
@@ -262,72 +275,82 @@ which is the same tie rule the linear kernel applies.
 
 ## Benchmarks
 
-Criterion, 8 threads, `u64` and `&'static str` keys, against `rayon::par_sort`
-(stable). Negative is faster.
-
-### `&str` — 32-byte keys, separately allocated, shuffled in memory
-
-| Scenario | 1M | 10M | 100M |
-| :--- | ---: | ---: | ---: |
-| Low cardinality (32 keys) | **−37%** | **−34%** | **−28%** |
-| Random | **−12%** | **−14%** | **−13%** |
-| Sorted | −9% | +11% | +15% |
-| Reversed | −9% | +71% | +30% |
-| Sawtooth | +41% | +33% | +23% |
+Criterion, 8 threads, against `rayon::par_sort` (stable). Medians. Negative is
+faster than the baseline.
 
 ### `u64`
 
 | Scenario | 1M | 10M | 100M |
 | :--- | ---: | ---: | ---: |
-| Low cardinality (32 keys) | **−22%** | **−21%** | **−26%** |
-| Reversed | **−14%** | −2% | **−13%** |
-| Sorted | −4% | 0% | +9% |
-| Random | +17% | +11% | +18% |
-| Sawtooth | +23% | +24% | +23% |
+| Low cardinality (32 keys) | **−27.0%** | **−27.3%** | **−25.7%** |
+| Sawtooth (50 teeth) | **−14.7%** | **−26.1%** | **−30.4%** |
+| Reversed | **−12.1%** | −1.6% | **−10.2%** |
+| Sorted | −6.6% | −5.0% | −4.0% |
+| Random | +19.3% | +21.5% | +19.1% |
+
+### `&str` — keys behind a pointer, dictionary of 1,048,576 strings
+
+| Scenario | 1M | 10M | 100M |
+| :--- | ---: | ---: | ---: |
+| Low cardinality (32 keys) | **−28.1%** | **−28.3%** | **−29.4%** |
+| Random | **−9.5%** | **−15.3%** | **−29.0%** |
+| Sorted | −8.3% | +8.4% | +0.2% |
+| Reversed | −2.5% | +57.9% | −7.5% |
+| Sawtooth (50 teeth) | +102.2% | +78.9% | +79.9% |
 
 ### What the numbers say
 
-**Low cardinality is the strongest case, in both key types and at every scale.**
-This is the categorical-key workload: `GROUP BY` columns, status flags, foreign
-keys with few distinct values, secondary sort keys.
+**Low cardinality is the strongest and most consistent case.** Roughly −27% for
+integers and −28% for pointer keys, at every scale tested. This is the
+categorical-key workload: `GROUP BY` columns, status flags, foreign keys with few
+distinct values, secondary sort keys.
 
-**Random `&str` is a genuine win and random `u64` is not.** Both are chaotic; the
-difference is the bottleneck. Pointer keys are latency-bound, and threads waiting
-on cache misses cover for each other; `par_sort` has nothing that compensates for
-a dereference. Embedded keys are bandwidth-bound, and once the structure has to
-be *created* rather than exploited, the engine is calling the same `sort()` the
-baseline calls, then paying for a merge on top.
+**Sawtooth is where run detection pays for integers**, and the margin grows with
+size: −14.7% at 1M, −30.4% at 100M. Every tooth is a long ascending run, which is
+exactly the structure the metadata phase exists to find.
 
-**Sawtooth loses consistently.** The pattern `i % 1000` makes every run cover the
-*same* value range, so adjacent runs interleave completely. Measured by
-comparison count it is the worst case for an adaptive merge, not a typical one —
-the shortcut that turns an already-ordered merge into a copy never fires, and the
-rank cuts of the P-way tree buy nothing while still costing.
+**Random pointer keys win, and random integers do not.** Both inputs are chaotic;
+the difference is what limits them. Dereferencing a `&str` costs a cache miss, so
+threads waiting on memory cover for each other and the advantage grows with scale
+(−9.5% → −29.0%). Integer keys are bandwidth-bound, and once the structure has to
+be *created* rather than exploited, the engine is calling the same block sort the
+baseline calls and then paying for a merge on top.
 
-**Reversed `&str` at scale is a routing failure, not an algorithmic one.** With
-repeated keys, a reversed array is not one descending run: the strict `>` in the
-detector breaks the run at every equal pair, producing 458,000 runs averaging 8.7
-elements in a 4M array. The sampler classifies it as structured, the P-way tree
-takes it, and short runs are exactly where rank cutting does not pay.
-
----
+**Sorted and reversed sit near the baseline.** Both collapse to a single run and
+finish in one linear pass, so the ceiling is memory bandwidth and there is nothing
+left to win.
 
 ## Known limitations
 
-- **Sawtooth and reversed-with-duplicates route to the wrong merge tree.** Both
-  produce runs too short for rank cutting to pay. A measured sweep shows the
-  k-way tree ahead across the entire range tested, with the crossover near 8,000
-  elements per run — routing by mean run length is the open fix.
-- **Random embedded keys.** With no structure to exploit and bandwidth already
-  saturated, the engine cannot beat a well-tuned parallel sort. It delegates.
-- **Thread scaling turns over at four threads.** Gains of 32–44% over the
-  baseline at one, two and four threads become losses at eight and above.
-  Oversubscription (16 and 32 threads on 8 cores) helps in neither regime.
-- **Tuning constants were calibrated on one machine.** The L1 and shared-cache
-  budgets, the block size, and the galloping crossover should be re-measured on
-  the target hardware.
+**`&str` sawtooth loses about 80%.** Every run covers the *same* range, so
+adjacent runs interleave completely and the block-insertion kernel never finds a
+block to copy. Note this is not specific to this engine: the MultiMerge
+predecessor loses by the same margin on the same input (3.15 s vs 1.78 s for
+`par_sort` at 100M), so it is a property of adaptive merging on that pattern
+rather than a regression.
 
----
+**`&str` reversed at 10M costs 58%**, while the same input at 1M and 100M is at
+or below the baseline. Reversed data with repeated keys is not one descending
+run: the strict `>` in the run detector breaks the run at every equal pair,
+producing runs of two elements. The non-monotonic behaviour across sizes suggests
+a threshold, and it has not been isolated.
+
+**Random integer keys cost about 20%** at every scale. With no structure to
+exploit and memory bandwidth already saturated, the engine cannot beat a
+well-tuned parallel sort on this input.
+
+**Gains invert below four threads.** Measured on random integers, the engine is
+32–44% *faster* than the baseline at one, two and four threads and slower at
+eight. Oversubscription (16 and 32 threads on 8 cores) helps in neither regime.
+
+**Tuning constants were calibrated on one machine.** The L1 and shared-cache
+budgets, the block size, the routing thresholds and the galloping crossover
+should be re-measured on the target hardware.
+
+**Measurement noise.** Several points show wide confidence intervals — the widest
+was a 2.3x spread between bounds. Ratios consistent across all three sizes are
+the ones to trust; single-point differences under about 10% are not resolvable
+with this harness.
 
 ## Correctness
 

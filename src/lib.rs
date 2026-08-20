@@ -36,6 +36,8 @@ pub struct PimConfig {
     pub tamanho_janela_amostra: usize,
 
     pub run_curto: usize,
+    pub run_medio_minimo: usize,
+    pub runs_via_kway: bool,
 }
 
 impl Default for PimConfig {
@@ -53,6 +55,8 @@ impl Default for PimConfig {
             janelas_amostra: 8,
             tamanho_janela_amostra: 96,
             run_curto: 128,
+            run_medio_minimo: 16,
+            runs_via_kway: true,
         }
     }
 }
@@ -1093,12 +1097,13 @@ fn reserva_buffer<T: Copy>(
         }
     }
 
-    let mut buffer = Vec::new();
-    buffer
+    let mut sonda: Vec<T> = Vec::new();
+    sonda
         .try_reserve_exact(arr.len())
         .map_err(|_| PimError::FalhaAoReservarMemoria { necessario })?;
-    buffer.resize(arr.len(), arr[0]);
-    Ok(buffer)
+    drop(sonda);
+
+    Ok(vec![arr[0]; arr.len()])
 }
 
 fn try_pim_sort_blocos<T: Ord + Copy + Send + Sync>(
@@ -1135,6 +1140,14 @@ fn try_pim_sort_runs<T: Ord + Copy + Send + Sync>(
     config: PimConfig,
 ) -> Result<(), PimError> {
     let metadata = detect_global_trend(arr);
+    try_pim_sort_runs_com_metadata(arr, config, metadata)
+}
+
+fn try_pim_sort_runs_com_metadata<T: Ord + Copy + Send + Sync>(
+    arr: &mut [T],
+    config: PimConfig,
+    metadata: Vec<i64>,
+) -> Result<(), PimError> {
     if metadata.len() == 1 {
         if metadata[0] < 0 {
             parallel_reverse(arr);
@@ -1147,17 +1160,28 @@ fn try_pim_sort_runs<T: Ord + Copy + Send + Sync>(
         .saturating_mul(std::mem::size_of::<i64>() + std::mem::size_of::<usize>());
     let mut buffer = reserva_buffer(arr, config, extras)?;
     let offsets = block_offsets(&metadata);
-    bottom_up_merge_pim_pway(
-        arr,
-        &mut buffer,
-        &metadata,
-        &offsets,
-        false,
-        config.workers_efetivos(),
-        1,
-        config,
-        true,
-    );
+    if config.runs_via_kway {
+        crate::multimerge::bottom_up_merge_kway(
+            arr,
+            &mut buffer,
+            &metadata,
+            &offsets,
+            tamanho_folha_config::<T>(config),
+            false,
+        );
+    } else {
+        bottom_up_merge_pim_pway(
+            arr,
+            &mut buffer,
+            &metadata,
+            &offsets,
+            false,
+            config.workers_efetivos(),
+            1,
+            config,
+            true,
+        );
+    }
     Ok(())
 }
 
@@ -1173,7 +1197,18 @@ pub fn try_pim_sort_with_config<T: Ord + Copy + Send + Sync>(
         return Ok(());
     }
 
-    match classifica_entrada(arr, config) {
+    let perfil = classifica_entrada(arr, config);
+
+    if perfil == PerfilEntrada::RunsCurtos && config.run_medio_minimo > 0 {
+        let metadata = detect_global_trend(arr);
+        let runs = metadata.len().max(1);
+        if arr.len() / runs >= config.run_medio_minimo {
+            return try_pim_sort_runs_com_metadata(arr, config, metadata);
+        }
+        return try_pim_sort_blocos(arr, config);
+    }
+
+    match perfil {
         PerfilEntrada::RunsLongos => try_pim_sort_runs(arr, config),
         PerfilEntrada::RunsCurtos | PerfilEntrada::Caotica => try_pim_sort_blocos(arr, config),
     }
