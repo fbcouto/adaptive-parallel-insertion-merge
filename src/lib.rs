@@ -38,6 +38,7 @@ pub struct PimConfig {
     pub run_curto: usize,
     pub run_medio_minimo: usize,
     pub runs_via_kway: bool,
+    pub folha_override: usize,
 }
 
 impl Default for PimConfig {
@@ -57,6 +58,7 @@ impl Default for PimConfig {
             run_curto: 128,
             run_medio_minimo: 16,
             runs_via_kway: true,
+            folha_override: 0,
         }
     }
 }
@@ -75,6 +77,9 @@ impl PimConfig {
 
 #[inline]
 fn tamanho_folha_config<T>(config: PimConfig) -> usize {
+    if config.folha_override > 0 {
+        return config.folha_override;
+    }
     let por_l1 = 32_768 / std::mem::size_of::<T>().max(1);
     let piso = match config.custo_comparacao {
         CustoComparacao::Embutida => 512,

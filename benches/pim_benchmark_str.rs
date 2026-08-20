@@ -1,3 +1,18 @@
+//! Bateria Criterion textual: Rayon, Multimerge e PIM refinado.
+//!
+//! Usa `&str`, que preserva comparacoes textuais e atende ao requisito `Copy`
+//! do PIM. As chaves vivem em um dicionario de 1.048.576 strings; somente os
+//! vetores de referencias sao clonados entre as amostras, fora da medicao.
+//!
+//! Execucao completa:
+//!   cargo bench --bench pim_benchmark_str
+//!
+//! Para igualar os trabalhadores:
+//!   $env:RAYON_NUM_THREADS = 8; $env:PIM_NUM_THREADS = 8
+//!
+//! Para construir somente um caso (economiza memoria em 100M):
+//!   $env:PIM_BENCH_CASE = 'Baixa cardinalidade/100M'
+
 use adaptive_parallel_insertion_merge::multimerge::multi_merge_sort;
 use adaptive_parallel_insertion_merge::pim_sort;
 use criterion::{black_box, criterion_group, criterion_main, BatchSize, Criterion};
@@ -14,6 +29,8 @@ const TAMANHO_DICIONARIO: usize = 1_048_576;
 const CARDINALIDADE_BAIXA: usize = 32;
 
 fn cria_dicionario() -> Vec<String> {
+    // Prefixo comum torna cada `Ord` de &str uma comparacao textual real, e a
+    // cauda hexadecimal mantem a ordem lexicografica igual a ordem numerica.
     (0..TAMANHO_DICIONARIO)
         .map(|indice| format!("PIM-CHAVE-{indice:08X}"))
         .collect()
@@ -115,6 +132,8 @@ fn bench_sorts(c: &mut Criterion) {
     let filtro = std::env::var("PIM_BENCH_CASE").ok();
 
     for &(tamanho, rotulo) in TAMANHOS {
+        // Cada base e descartada antes de construir a proxima. Em 100M, isso
+        // evita manter cinco vetores de referencias de 1,6 GB simultaneamente.
         if inclui_caso("Aleatorio", rotulo, filtro.as_deref()) {
             let base = gera_aleatorio(tamanho, &dicionario);
             mede_grupo(c, "Aleatorio", rotulo, &base);

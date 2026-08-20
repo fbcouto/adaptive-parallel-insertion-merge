@@ -19,6 +19,10 @@ harness = false
 name = "pim_benchmark_str"
 harness = false
 
+[[bench]]
+name = "merge_benchmark"
+harness = false
+
 [[bin]]
 name = "crosscheck"
 path = "src/bin/crosscheck.rs"

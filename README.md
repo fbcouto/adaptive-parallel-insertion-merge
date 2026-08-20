@@ -177,6 +177,16 @@ inverse of the question, and finding the right `i` by trial would cost
 Cost is negligible: 96 cuts of roughly 20 comparisons each is under 2,000
 comparisons against a million elements moved, and the cuts run in parallel.
 
+**Each task is bounded on both sides.** A task covering output range
+`[k, k')` receives `a[i..i']` and `b[j..j']`, cut at *both* boundaries — not the
+suffixes `a[i..]` and `b[j..]`. The difference matters when adjacent runs cover
+disjoint ranges: a segment that falls entirely inside one run then sees the
+other side genuinely empty and copies straight through, instead of comparing at
+every position against a remainder it will never take from. Measured on two
+sorted `&str` lists with disjoint ranges, 8 threads: 9.85 ms with suffixes,
+1.50 ms with bounded slices. The extra cut per segment is free — the cuts are
+computed in parallel before any task starts.
+
 `P` is derived from the thread count, not from `N` — measured saturation is
 around four tasks per thread — with a floor on segment size so that each task
 carries enough work to dilute its scheduling cost.
@@ -354,16 +364,43 @@ with this harness.
 
 ## Correctness
 
-- Unit and integration tests covering the metadata monoid, cut-point invariants
-  at **every** `k` from 0 to `m+n`, the bidirectional theorem at every possible
-  split, and leaf folding of descending runs.
+- 32 unit and integration tests covering the metadata monoid, cut-point
+  invariants at **every** `k` from 0 to `m+n`, the bidirectional theorem at
+  every possible split, and leaf folding of descending runs.
 - A stability fuzz over every public entry point using `(key, index)` pairs, so
   any reordering of equal keys is caught — not just a broken sort order.
 - Cut algorithms are cross-validated against each other and against a reference
   stable merge on cardinalities down to two distinct values, which saturates
   tie-breaking.
+- A cross-check binary sorts identical inputs with all three engines across six
+  data patterns and compares every output against `slice::sort` as an
+  independent reference.
 
 ---
+
+## Benchmark suites
+
+Three Criterion batteries, each covering something the others do not.
+
+- **`pim_benchmark`** and **`pim_benchmark_str`** measure the full sort on `u64`
+  and `&str`, across five data shapes and three scales. These produce the tables
+  above.
+- **`merge_benchmark`** measures the *merge* of two already-sorted lists — union
+  of indexes, partition merge, ordered join, append of a sorted batch. It exists
+  separately because the advantage of bounded segments is invisible in a sort
+  benchmark: the disjoint structure dissolves as the merge tree climbs, and
+  intermediate runs are already mixtures of several batches by the second level.
+
+```bash
+cargo bench --bench pim_benchmark
+cargo bench --bench pim_benchmark_str
+cargo bench --bench merge_benchmark -- "disjuntas"
+```
+
+The merge battery compares six strategies — sequential, bidirectional, and
+P-way, each with and without galloping — over three degrees of interleaving.
+The spread between the best and worst strategy on the same input reaches 14x,
+which is why the engine selects adaptively rather than fixing one.
 
 ## Usage
 

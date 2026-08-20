@@ -1,3 +1,18 @@
+//! Comparacao Criterion entre Rayon, Multimerge e o PIM refinado.
+//!
+//! O PIM preserva seu caminho adaptativo nos dados estruturados. Somente a
+//! entrada que o escudo de entropia classifica como aleatoria segue para
+//! `sort(1920)` e a arvore P-way global.
+//!
+//! Execucao completa:
+//!   cargo bench --bench pim_benchmark
+//!
+//! Para uma comparacao com a mesma quantidade de trabalhadores:
+//!   $env:RAYON_NUM_THREADS = 8; $env:PIM_NUM_THREADS = 8
+//!
+//! Um grupo especifico pode ser filtrado, por exemplo:
+//!   cargo bench --bench pim_benchmark -- "Aleatorio/10M"
+
 use adaptive_parallel_insertion_merge::multimerge::multi_merge_sort;
 use adaptive_parallel_insertion_merge::pim_sort;
 use criterion::{black_box, criterion_group, criterion_main, BatchSize, Criterion};
@@ -37,6 +52,8 @@ fn gera_sawtooth(tamanho: usize) -> Vec<u64> {
     dados
 }
 
+/// Chaves repetidas, mas em ordem aleatoria. O PIM deve continuar estavel e o
+/// escudo de entropia deve encaminhar este caso ao caminho aleatorio.
 fn gera_baixa_cardinalidade(tamanho: usize) -> Vec<u64> {
     let mut rng = StdRng::seed_from_u64(0x10CA_4D1A);
     (0..tamanho).map(|_| rng.gen_range(0..32u64)).collect()

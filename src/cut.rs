@@ -642,6 +642,19 @@ pub fn pway_merge_frente<T: Ord + Copy + Send + Sync>(
 
     let fr: Vec<usize> = (0..=p).map(|i| total * i / p).collect();
 
+    let cortes: Vec<(usize, usize)> = fr
+        .par_iter()
+        .map(|&k| {
+            if k == 0 {
+                (0, 0)
+            } else if k == total {
+                (a.len(), b.len())
+            } else {
+                corte_diagonal(k, a, b)
+            }
+        })
+        .collect();
+
     let mut pedacos: Vec<&mut [T]> = Vec::with_capacity(p);
     let mut resto: &mut [T] = dest;
     for i in 0..p - 1 {
@@ -652,11 +665,18 @@ pub fn pway_merge_frente<T: Ord + Copy + Send + Sync>(
     pedacos.push(resto);
 
     pedacos.into_par_iter().enumerate().for_each(|(i, d)| {
-        if i == 0 {
-            if galope { pim_front(a, b, d) } else { merge_front(a, b, d) }
+        let (ia, ib) = cortes[i];
+        let (ja, jb) = cortes[i + 1];
+        let sa = &a[ia..ja];
+        let sb = &b[ib..jb];
+        if sb.is_empty() {
+            d.copy_from_slice(sa);
+        } else if sa.is_empty() {
+            d.copy_from_slice(sb);
+        } else if galope {
+            pim_front(sa, sb, d)
         } else {
-            let (ia, ib) = corte_diagonal(fr[i], a, b);
-            if galope { pim_front(&a[ia..], &b[ib..], d) } else { merge_front(&a[ia..], &b[ib..], d) }
+            merge_front(sa, sb, d)
         }
     });
 }
@@ -691,6 +711,20 @@ pub fn pway_merge_frente_adaptativo<T: Ord + Copy + Send + Sync>(
     }
 
     let fr: Vec<usize> = (0..=p).map(|i| total * i / p).collect();
+
+    let cortes: Vec<(usize, usize)> = fr
+        .par_iter()
+        .map(|&k| {
+            if k == 0 {
+                (0, 0)
+            } else if k == total {
+                (a.len(), b.len())
+            } else {
+                corte_diagonal(k, a, b)
+            }
+        })
+        .collect();
+
     let mut pedacos: Vec<&mut [T]> = Vec::with_capacity(p);
     let mut resto = dest;
     for i in 0..p - 1 {
@@ -701,11 +735,16 @@ pub fn pway_merge_frente_adaptativo<T: Ord + Copy + Send + Sync>(
     pedacos.push(resto);
 
     pedacos.into_par_iter().enumerate().for_each(|(i, d)| {
-        if i == 0 {
-            pim_front_adaptativo(a, b, d, min_gallop);
+        let (ia, ib) = cortes[i];
+        let (ja, jb) = cortes[i + 1];
+        let sa = &a[ia..ja];
+        let sb = &b[ib..jb];
+        if sb.is_empty() {
+            d.copy_from_slice(sa);
+        } else if sa.is_empty() {
+            d.copy_from_slice(sb);
         } else {
-            let (ia, ib) = corte_diagonal(fr[i], a, b);
-            pim_front_adaptativo(&a[ia..], &b[ib..], d, min_gallop);
+            pim_front_adaptativo(sa, sb, d, min_gallop);
         }
     });
 }
